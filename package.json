@@ -1,0 +1,58 @@
+{
+  "name": "tolkovin",
+  "version": "0.0.1",
+  "description": "Push-to-talk dictation MVP: hold Fn, record speech, transcribe with Yandex SpeechKit, paste into focused field.",
+  "author": "Sergei Tachkov <tachkovsa@gmail.com>",
+  "license": "MIT",
+  "private": true,
+  "main": "electron/main.js",
+  "scripts": {
+    "build:watcher": "bash native/build.sh",
+    "postinstall": "electron-rebuild -f -w better-sqlite3 && bash scripts/rename-electron.sh",
+    "start": "node_modules/electron/dist/TolkovinDev.app/Contents/MacOS/TolkovinDev .",
+    "package:mac": "npm run build:watcher && electron-builder --mac --dir",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.9.1",
+    "dotenv": "^16.4.5",
+    "opus-recorder": "^8.0.5"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^26.15.3",
+    "electron-rebuild": "^3.2.9",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.7.0",
+    "prettier": "^3.9.5"
+  },
+  "build": {
+    "appId": "com.tolkovin.dev",
+    "productName": "Tolkovin",
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "extraResources": [
+      {
+        "from": "native/fn-watcher",
+        "to": "fn-watcher"
+      }
+    ],
+    "mac": {
+      "target": [
+        "dir"
+      ],
+      "icon": "assets/icon.icns",
+      "category": "public.app-category.productivity",
+      "identity": null,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Tolkovin needs microphone access to record speech for dictation.",
+        "NSAppleEventsUsageDescription": "Tolkovin uses System Events to paste recognized text into the focused app.",
+        "LSUIElement": true
+      }
+    }
+  }
+}

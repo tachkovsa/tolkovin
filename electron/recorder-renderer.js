@@ -1,0 +1,226 @@
+// Runs in a hidden BrowserWindow. The mic stream is opened fresh for every
+// recording and closed again right after — holding it open for the whole
+// app session used to avoid getUserMedia's acquisition latency, but it also
+// meant macOS's mic-in-use indicator stayed lit permanently, which reads as
+// "always listening" even though nothing was being captured. Instead, main
+// shows a brief "warming up" state (see handleWatcherLine in main.js) while
+// the stream spins up, so the user waits a beat before speaking instead of
+// losing the first word — and the indicator only lights up per-recording.
+// Encodes to Ogg Opus via opus-recorder. Yandex's sync recognition
+// endpoint hard-caps every request at 30s AND 1MB regardless of format, so
+// a single long hold gets sliced into sub-30s segments — cut at a pause in
+// speech when we can find one (via a simple RMS silence check), or forced
+// at a hard ceiling if the user just doesn't stop talking. Segments are
+// collected and shipped to main together once Fn is released, where
+// they're transcribed in order and the text is concatenated into one paste.
+//
+// Each segment gets its own opus-recorder Recorder instance. opus-recorder's
+// start()/stop() is designed for one recording per instance — reusing a
+// single instance across a stop()+start() cut re-sends "init" to the same
+// encoder worker in a way the library doesn't document or test, which
+// silently produced broken/empty audio for every segment after the first.
+// A fresh instance per segment sidesteps that entirely.
+
+// Silence-detection only arms in the last few seconds before the hard cap —
+// arming it right after 15s (as before) meant the very first ordinary
+// mid-sentence pause triggered an immediate cut, so a 60s dictation was
+// splitting into 4 segments of ~15s each instead of using the ~27s budget
+// Yandex actually allows. Narrowing the window to just before the ceiling
+// lets each segment run close to full length and only look for a clean
+// pause to cut on right before being forced to.
+const ARM_AFTER_MS = 23000; // don't look for a silence cut before this
+const HARD_SEGMENT_MS = 27000; // force a cut here regardless of silence
+const SILENCE_RMS = 0.02;
+const SILENCE_HOLD_MS = 600; // how long the signal must stay quiet to count as a pause
+const POLL_MS = 150;
+
+let audioCtx = null;
+let mediaStream = null;
+let sourceNode = null;
+let analyser = null;
+let analyserBuffer = null;
+let readyPromise = null;
+
+let sessionActive = false;
+let segments = []; // { buffer, durationMs }[]
+let segmentStartedAt = 0;
+let silenceStartedAt = null;
+let pollTimer = null;
+let currentRecorder = null;
+
+function ensureReady() {
+  if (!readyPromise) {
+    readyPromise = (async () => {
+      const deviceId = await window.tolkovin.getMicDeviceId();
+      const audioConstraints = { channelCount: 1, echoCancellation: true, noiseSuppression: true };
+      if (deviceId) audioConstraints.deviceId = { exact: deviceId };
+
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+      console.log('mic acquired, tracks:', mediaStream.getAudioTracks().length);
+
+      audioCtx = new AudioContext();
+      sourceNode = audioCtx.createMediaStreamSource(mediaStream);
+
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 1024;
+      analyserBuffer = new Float32Array(analyser.fftSize);
+      sourceNode.connect(analyser); // parallel tap, doesn't touch any recorder's own graph
+    })();
+  }
+  return readyPromise;
+}
+
+// Releases the mic between recordings so the OS mic-in-use indicator only
+// lights up while a dictation is actually in progress.
+function teardownMic() {
+  if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+  if (audioCtx) audioCtx.close().catch(() => {});
+  mediaStream = null;
+  audioCtx = null;
+  sourceNode = null;
+  analyser = null;
+  analyserBuffer = null;
+  readyPromise = null;
+  console.log('mic released');
+}
+
+// Serializes start/stop handling. Acquiring the mic is async, so a stop that
+// arrives while a start is still warming up must wait its turn — otherwise
+// it could land before currentRecorder exists (a no-op) and the start's
+// continuation would then arm a recording nothing will ever tell to stop.
+let micChain = Promise.resolve();
+function queued(fn) {
+  // Distinct rejection handler — reusing `fn` for both arms of .then() would
+  // replay it as an error handler (with the rejection reason as its sole
+  // arg) if the chain was already broken, running the wrong logic instead of
+  // recovering from it.
+  micChain = micChain.then(fn, (err) => {
+    console.error('[recorder] queued chain was rejected, resetting', String(err));
+    teardownMic();
+  });
+  return micChain;
+}
+
+function currentRms() {
+  analyser.getFloatTimeDomainData(analyserBuffer);
+  let sum = 0;
+  for (let i = 0; i < analyserBuffer.length; i++) sum += analyserBuffer[i] * analyserBuffer[i];
+  return Math.sqrt(sum / analyserBuffer.length);
+}
+
+function createSegmentRecorder() {
+  return new Recorder({
+    sourceNode,
+    encoderPath: 'vendor/encoderWorker.min.js',
+    encoderSampleRate: 16000,
+    encoderApplication: 2048, // OPUS_APPLICATION_VOIP — tuned for speech
+    encoderBitRate: 24000,
+    numberOfChannels: 1,
+    streamPages: false, // one complete Ogg Opus buffer per stop()
+  });
+}
+
+function startSegment() {
+  segmentStartedAt = Date.now();
+  const rec = createSegmentRecorder();
+  currentRecorder = rec;
+  let cutAt = null;
+
+  rec.cutNow = () => {
+    cutAt = Date.now();
+    rec.stop();
+  };
+
+  rec.ondataavailable = (typedArray) => {
+    const durationMs = (cutAt ?? Date.now()) - segmentStartedAt;
+    segments.push({ buffer: typedArray.buffer, durationMs });
+    console.log(
+      'segment captured, bytes:',
+      typedArray.byteLength,
+      'durationMs:',
+      durationMs,
+      '| total segments:',
+      segments.length
+    );
+    rec.close().catch((err) => console.error('[recorder] segment close failed', String(err)));
+
+    if (sessionActive) {
+      // more speech may follow this cut — start a fresh instance for the next segment
+      startSegment();
+    } else {
+      const toSend = segments;
+      segments = [];
+      window.tolkovin.sendAudioSegments(toSend);
+      teardownMic();
+    }
+  };
+
+  return rec.start();
+}
+
+function requestSegmentCut() {
+  currentRecorder?.cutNow();
+}
+
+function pollForSilence() {
+  if (!sessionActive) return;
+  const now = Date.now();
+  const elapsed = now - segmentStartedAt;
+
+  if (currentRms() < SILENCE_RMS) {
+    if (silenceStartedAt === null) silenceStartedAt = now;
+  } else {
+    silenceStartedAt = null;
+  }
+  const silenceHeld = silenceStartedAt ? now - silenceStartedAt : 0;
+
+  const cutOnPause = elapsed >= ARM_AFTER_MS && silenceHeld >= SILENCE_HOLD_MS;
+  const cutOnHardCap = elapsed >= HARD_SEGMENT_MS;
+  if (cutOnPause || cutOnHardCap) {
+    console.log('cutting segment, reason:', cutOnHardCap ? 'hard-cap' : 'silence', '| elapsed:', elapsed);
+    silenceStartedAt = null;
+    requestSegmentCut();
+  }
+}
+
+window.tolkovin.onStart(() => {
+  queued(async () => {
+    try {
+      await ensureReady(); // pays acquisition latency every time — main shows a "warming" state while this runs
+      segments = [];
+      sessionActive = true;
+      silenceStartedAt = null;
+      await startSegment();
+      window.tolkovin.notifyArmed(); // lets main flip the overlay from "warming" to "recording"
+      console.log('recording started');
+
+      clearInterval(pollTimer);
+      pollTimer = setInterval(pollForSilence, POLL_MS);
+    } catch (err) {
+      // getUserMedia can fail here now in ways it rarely did when the stream
+      // was warmed once at launch — permission revoked, device unplugged,
+      // grabbed by another app. Without this, no segments ever get produced,
+      // so 'audio-segments-captured' never fires and main is left stuck in
+      // 'warming'/'transcribing' forever with no recovery path.
+      console.error('[recorder] failed to start recording', String((err && err.stack) || err));
+      sessionActive = false;
+      teardownMic();
+      window.tolkovin.notifyFailed();
+    }
+  });
+});
+
+window.tolkovin.onStop(() => {
+  queued(() => {
+    console.log('recording stopped');
+    if (!sessionActive) {
+      // Fn was released before the mic ever finished arming — nothing was
+      // captured, so just let it go back to sleep.
+      teardownMic();
+      return;
+    }
+    sessionActive = false;
+    clearInterval(pollTimer);
+    requestSegmentCut(); // final segment — ondataavailable will see sessionActive=false and ship everything
+  });
+});
