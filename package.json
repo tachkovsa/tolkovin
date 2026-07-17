@@ -1,6 +1,6 @@
 {
   "name": "tolkovin",
-  "version": "0.0.1-alpha",
+  "version": "0.0.1",
   "description": "Push-to-talk dictation MVP: hold Fn, record speech, transcribe with Yandex SpeechKit, paste into focused field.",
   "author": "Sergei Tachkov <tachkovsa@gmail.com>",
   "license": "MIT",
