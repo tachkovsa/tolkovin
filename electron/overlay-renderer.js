@@ -1,6 +1,12 @@
 const timerEl = document.getElementById('timer');
+const labelEl = document.getElementById('label');
 
 let timerInterval = null;
+
+const LABELS = {
+  warming: 'Разогрев…',
+  transcribing: 'Распознавание…',
+};
 
 function formatElapsed(ms) {
   const totalSec = Math.max(0, Math.floor(ms / 1000));
@@ -11,6 +17,7 @@ function formatElapsed(ms) {
 
 window.tolkovinOverlay.onState((state, startedAt) => {
   document.body.className = state;
+  labelEl.textContent = LABELS[state] || '';
   clearInterval(timerInterval);
 
   if (state === 'recording' && startedAt) {

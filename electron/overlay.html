@@ -54,6 +54,23 @@
         }
       }
 
+      body.warming #dot {
+        display: block;
+        background: #0a84ff;
+        animation: breathe 0.6s ease-in-out infinite;
+      }
+      @keyframes breathe {
+        0%,
+        100% {
+          transform: scale(0.8);
+          opacity: 0.6;
+        }
+        50% {
+          transform: scale(1.4);
+          opacity: 1;
+        }
+      }
+
       #eq {
         display: none;
         align-items: center;
@@ -109,7 +126,8 @@
       #label {
         display: none;
       }
-      body.transcribing #label {
+      body.transcribing #label,
+      body.warming #label {
         display: inline;
       }
     </style>
@@ -119,7 +137,7 @@
       <div id="dot"></div>
       <div id="eq"><span></span><span></span><span></span><span></span><span></span></div>
       <span id="timer">0:00</span>
-      <span id="label">Transcribing…</span>
+      <span id="label"></span>
     </div>
     <script src="overlay-renderer.js"></script>
   </body>

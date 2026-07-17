@@ -5,4 +5,5 @@ contextBridge.exposeInMainWorld('tolkovin', {
   onStop: (cb) => ipcRenderer.on('stop-recording', cb),
   sendAudioSegments: (segments) => ipcRenderer.send('audio-segments-captured', segments),
   getMicDeviceId: () => ipcRenderer.invoke('get-mic-device-id'),
+  notifyArmed: () => ipcRenderer.send('recording-armed'),
 });

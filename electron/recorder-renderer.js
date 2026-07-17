@@ -1,6 +1,12 @@
-// Runs in a hidden BrowserWindow. Keeps the mic stream open continuously
-// (getUserMedia latency was clipping the first word of every recording)
-// and encodes to Ogg Opus via opus-recorder. Yandex's sync recognition
+// Runs in a hidden BrowserWindow. The mic stream is opened fresh for every
+// recording and closed again right after — holding it open for the whole
+// app session used to avoid getUserMedia's acquisition latency, but it also
+// meant macOS's mic-in-use indicator stayed lit permanently, which reads as
+// "always listening" even though nothing was being captured. Instead, main
+// shows a brief "warming up" state (see handleWatcherLine in main.js) while
+// the stream spins up, so the user waits a beat before speaking instead of
+// losing the first word — and the indicator only lights up per-recording.
+// Encodes to Ogg Opus via opus-recorder. Yandex's sync recognition
 // endpoint hard-caps every request at 30s AND 1MB regardless of format, so
 // a single long hold gets sliced into sub-30s segments — cut at a pause in
 // speech when we can find one (via a simple RMS silence check), or forced
@@ -50,7 +56,7 @@ function ensureReady() {
       if (deviceId) audioConstraints.deviceId = { exact: deviceId };
 
       mediaStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
-      console.log('mic warmed up, tracks:', mediaStream.getAudioTracks().length);
+      console.log('mic acquired, tracks:', mediaStream.getAudioTracks().length);
 
       audioCtx = new AudioContext();
       sourceNode = audioCtx.createMediaStreamSource(mediaStream);
@@ -64,9 +70,29 @@ function ensureReady() {
   return readyPromise;
 }
 
-// Warm up as soon as this hidden window loads, so the very first Fn press
-// already has a live mic stream instead of paying init latency.
-ensureReady().catch((err) => console.error('[recorder] warmup failed', String(err)));
+// Releases the mic between recordings so the OS mic-in-use indicator only
+// lights up while a dictation is actually in progress.
+function teardownMic() {
+  if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+  if (audioCtx) audioCtx.close().catch(() => {});
+  mediaStream = null;
+  audioCtx = null;
+  sourceNode = null;
+  analyser = null;
+  analyserBuffer = null;
+  readyPromise = null;
+  console.log('mic released');
+}
+
+// Serializes start/stop handling. Acquiring the mic is async, so a stop that
+// arrives while a start is still warming up must wait its turn — otherwise
+// it could land before currentRecorder exists (a no-op) and the start's
+// continuation would then arm a recording nothing will ever tell to stop.
+let micChain = Promise.resolve();
+function queued(fn) {
+  micChain = micChain.then(fn, fn);
+  return micChain;
+}
 
 function currentRms() {
   analyser.getFloatTimeDomainData(analyserBuffer);
@@ -118,6 +144,7 @@ function startSegment() {
       const toSend = segments;
       segments = [];
       window.tolkovin.sendAudioSegments(toSend);
+      teardownMic();
     }
   };
 
@@ -149,21 +176,32 @@ function pollForSilence() {
   }
 }
 
-window.tolkovin.onStart(async () => {
-  await ensureReady(); // no-op after the first call — stream is already live
-  segments = [];
-  sessionActive = true;
-  silenceStartedAt = null;
-  await startSegment();
-  console.log('recording started');
+window.tolkovin.onStart(() => {
+  queued(async () => {
+    await ensureReady(); // pays acquisition latency every time — main shows a "warming" state while this runs
+    segments = [];
+    sessionActive = true;
+    silenceStartedAt = null;
+    await startSegment();
+    window.tolkovin.notifyArmed(); // lets main flip the overlay from "warming" to "recording"
+    console.log('recording started');
 
-  clearInterval(pollTimer);
-  pollTimer = setInterval(pollForSilence, POLL_MS);
+    clearInterval(pollTimer);
+    pollTimer = setInterval(pollForSilence, POLL_MS);
+  });
 });
 
 window.tolkovin.onStop(() => {
-  console.log('recording stopped');
-  sessionActive = false;
-  clearInterval(pollTimer);
-  requestSegmentCut(); // final segment — ondataavailable will see sessionActive=false and ship everything
+  queued(() => {
+    console.log('recording stopped');
+    if (!sessionActive) {
+      // Fn was released before the mic ever finished arming — nothing was
+      // captured, so just let it go back to sleep.
+      teardownMic();
+      return;
+    }
+    sessionActive = false;
+    clearInterval(pollTimer);
+    requestSegmentCut(); // final segment — ondataavailable will see sessionActive=false and ship everything
+  });
 });

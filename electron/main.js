@@ -42,7 +42,7 @@ let watcherProc = null;
 let watcherEverReady = false;
 let watcherRestartCount = 0;
 let quitting = false;
-let state = 'idle'; // idle | recording | transcribing
+let state = 'idle'; // idle | warming | recording | transcribing
 
 function createRecorderWindow() {
   recorderWindow = new BrowserWindow({
@@ -115,6 +115,7 @@ function createWorkspaceWindow() {
 
 const STATE_LABELS = {
   idle: 'Idle — hold Fn to talk',
+  warming: 'Warming up mic…',
   recording: 'Recording…',
   transcribing: 'Transcribing…',
 };
@@ -237,13 +238,25 @@ function handleWatcherLine(line) {
     return;
   }
   if (line === 'DOWN' && state === 'idle') {
-    setState('recording');
+    // The mic is opened fresh for every recording (see recorder-renderer.js)
+    // instead of staying live for the whole app session, so macOS's mic-in-use
+    // indicator isn't lit permanently. That means there's a real acquisition
+    // delay here — "warming" covers it so the user waits a beat instead of
+    // having the first word of their dictation clipped.
+    setState('warming');
     recorderWindow.webContents.send('start-recording');
-  } else if (line === 'UP' && state === 'recording') {
+  } else if (line === 'UP' && (state === 'warming' || state === 'recording')) {
     setState('transcribing');
     recorderWindow.webContents.send('stop-recording');
   }
 }
+
+ipcMain.on('recording-armed', () => {
+  // Fires once the renderer's mic stream is actually live and capturing. If
+  // Fn was already released by then, state has moved on to 'transcribing'
+  // and this is a no-op.
+  if (state === 'warming') setState('recording');
+});
 
 ipcMain.handle('get-mic-device-id', () => config.load().micDeviceId || '');
 
