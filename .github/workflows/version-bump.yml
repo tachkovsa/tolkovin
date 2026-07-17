@@ -1,0 +1,53 @@
+name: Bump version on PR into dev
+
+# Auto-bumps the patch version in package.json when a feature branch is
+# merged (or updated) as a PR targeting dev, so dev's version keeps moving
+# forward without anyone having to remember to do it by hand. Skipped for
+# PRs from forks (GITHUB_TOKEN can't push to fork branches, and we don't
+# want to auto-commit onto branches we don't control) and guarded against
+# re-triggering itself in a loop.
+
+on:
+  pull_request:
+    branches: [dev]
+    types: [opened, synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  bump-version:
+    if: >
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref != 'dev' &&
+      github.head_ref != 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Check whether this commit already bumped the version
+        id: guard
+        run: |
+          if git log -1 --pretty=%B | grep -q '^chore: bump version'; then
+            echo "already_bumped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_bumped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.guard.outputs.already_bumped == 'false'
+        with:
+          node-version: 20
+
+      - name: Bump patch version and push back to the PR branch
+        if: steps.guard.outputs.already_bumped == 'false'
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          npm version patch --no-git-tag-version -m "chore: bump version to %s [skip ci]"
+          git push origin HEAD:"$HEAD_REF"

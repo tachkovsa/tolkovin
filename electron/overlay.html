@@ -1,0 +1,126 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        overflow: hidden;
+        -webkit-user-select: none;
+        -webkit-app-region: no-drag;
+      }
+      #pill {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: fit-content;
+        margin: 8px auto 0;
+        padding: 8px 16px;
+        border-radius: 999px;
+        background: rgba(28, 28, 30, 0.92);
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+        font:
+          13px -apple-system,
+          BlinkMacSystemFont,
+          sans-serif;
+        color: #f2f2f2;
+        white-space: nowrap;
+      }
+      #dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #ff453a;
+        flex: none;
+        display: none;
+      }
+      body.transcribing #dot {
+        display: block;
+        background: #ffd60a;
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin {
+        0% {
+          transform: scale(1);
+        }
+        50% {
+          transform: scale(0.6);
+        }
+        100% {
+          transform: scale(1);
+        }
+      }
+
+      #eq {
+        display: none;
+        align-items: center;
+        gap: 3px;
+        height: 16px;
+        flex: none;
+      }
+      body.recording #eq {
+        display: flex;
+      }
+      #eq span {
+        display: block;
+        width: 3px;
+        border-radius: 2px;
+        background: #ff453a;
+        height: 4px;
+        animation: bounce 900ms ease-in-out infinite;
+      }
+      #eq span:nth-child(1) {
+        animation-delay: 0ms;
+      }
+      #eq span:nth-child(2) {
+        animation-delay: 120ms;
+      }
+      #eq span:nth-child(3) {
+        animation-delay: 240ms;
+      }
+      #eq span:nth-child(4) {
+        animation-delay: 360ms;
+      }
+      #eq span:nth-child(5) {
+        animation-delay: 480ms;
+      }
+      @keyframes bounce {
+        0%,
+        100% {
+          height: 4px;
+        }
+        50% {
+          height: 16px;
+        }
+      }
+
+      #timer {
+        display: none;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.2px;
+      }
+      body.recording #timer {
+        display: inline;
+      }
+
+      #label {
+        display: none;
+      }
+      body.transcribing #label {
+        display: inline;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="pill">
+      <div id="dot"></div>
+      <div id="eq"><span></span><span></span><span></span><span></span><span></span></div>
+      <span id="timer">0:00</span>
+      <span id="label">Transcribing…</span>
+    </div>
+    <script src="overlay-renderer.js"></script>
+  </body>
+</html>
