@@ -1,12 +1,18 @@
 const timerEl = document.getElementById('timer');
 const labelEl = document.getElementById('label');
+const retryBtn = document.getElementById('retryBtn');
+const cancelBtn = document.getElementById('cancelBtn');
 
 let timerInterval = null;
 
 const LABELS = {
   warming: 'Разогрев…',
   transcribing: 'Распознавание…',
+  error: 'Произошла ошибка',
 };
+
+retryBtn.addEventListener('click', () => window.tolkovinOverlay.retry());
+cancelBtn.addEventListener('click', () => window.tolkovinOverlay.cancel());
 
 function formatElapsed(ms) {
   const totalSec = Math.max(0, Math.floor(ms / 1000));

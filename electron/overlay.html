@@ -127,8 +127,56 @@
         display: none;
       }
       body.transcribing #label,
-      body.warming #label {
+      body.warming #label,
+      body.error #label {
         display: inline;
+      }
+
+      #errorIcon {
+        display: none;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: #ff453a;
+        flex: none;
+      }
+      #errorIcon svg {
+        width: 10px;
+        height: 10px;
+      }
+      body.error #errorIcon {
+        display: flex;
+      }
+
+      .icon-btn {
+        display: none;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        border: none;
+        background: rgba(255, 255, 255, 0.1);
+        color: #f2f2f2;
+        cursor: pointer;
+        flex: none;
+        padding: 0;
+        -webkit-app-region: no-drag;
+      }
+      .icon-btn:hover {
+        background: rgba(255, 255, 255, 0.2);
+      }
+      .icon-btn svg {
+        width: 14px;
+        height: 14px;
+      }
+      body.error .icon-btn {
+        display: flex;
+      }
+      #cancelBtn {
+        color: #ff8a80;
       }
     </style>
   </head>
@@ -136,8 +184,27 @@
     <div id="pill">
       <div id="dot"></div>
       <div id="eq"><span></span><span></span><span></span><span></span><span></span></div>
+      <div id="errorIcon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round">
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </div>
       <span id="timer">0:00</span>
       <span id="label"></span>
+      <button id="retryBtn" class="icon-btn" title="Повторить" aria-label="Повторить">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M23 4v6h-6" />
+          <path d="M1 20v-6h6" />
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+        </svg>
+      </button>
+      <button id="cancelBtn" class="icon-btn" title="Отмена" aria-label="Отмена">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
     </div>
     <script src="overlay-renderer.js"></script>
   </body>

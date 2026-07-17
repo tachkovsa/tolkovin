@@ -32,7 +32,7 @@ process.on('unhandledRejection', (err) =>
 );
 
 const MIN_RECORDING_MS = 150; // ignore accidental taps
-const OVERLAY_SIZE = { width: 240, height: 44 };
+const OVERLAY_SIZE = { width: 300, height: 52 }; // wide enough for the error state's icon + Retry/Cancel buttons
 
 let tray = null;
 let recorderWindow = null;
@@ -42,7 +42,8 @@ let watcherProc = null;
 let watcherEverReady = false;
 let watcherRestartCount = 0;
 let quitting = false;
-let state = 'idle'; // idle | warming | recording | transcribing
+let state = 'idle'; // idle | warming | recording | transcribing | error
+let lastRecordingId = null; // db row the overlay's error panel can retry
 
 function createRecorderWindow() {
   recorderWindow = new BrowserWindow({
@@ -118,6 +119,7 @@ const STATE_LABELS = {
   warming: 'Warming up mic…',
   recording: 'Recording…',
   transcribing: 'Transcribing…',
+  error: 'Recognition failed',
 };
 
 function refreshTray() {
@@ -143,6 +145,9 @@ let recordingStartedAt = null;
 function setState(next) {
   state = next;
   refreshTray();
+  // The overlay is click-through (setIgnoreMouseEvents) in every state except
+  // 'error', where it grows Retry/Cancel buttons the user needs to click.
+  overlayWindow.setIgnoreMouseEvents(next !== 'error');
   if (next === 'idle') {
     overlayWindow.hide();
   } else {
@@ -237,7 +242,7 @@ function handleWatcherLine(line) {
     log.log('[fn-watcher] ready');
     return;
   }
-  if (line === 'DOWN' && state === 'idle') {
+  if (line === 'DOWN' && (state === 'idle' || state === 'error')) {
     // The mic is opened fresh for every recording (see recorder-renderer.js)
     // instead of staying live for the whole app session, so macOS's mic-in-use
     // indicator isn't lit permanently. That means there's a real acquisition
@@ -256,6 +261,13 @@ ipcMain.on('recording-armed', () => {
   // Fn was already released by then, state has moved on to 'transcribing'
   // and this is a no-op.
   if (state === 'warming') setState('recording');
+});
+
+ipcMain.on('recording-failed', () => {
+  // The renderer never got a mic stream up (permission revoked, device
+  // unplugged, grabbed by another app) — no segments were ever captured, so
+  // 'audio-segments-captured' will never fire to reset state on its own.
+  if (state === 'warming' || state === 'recording' || state === 'transcribing') setState('idle');
 });
 
 ipcMain.handle('get-mic-device-id', () => config.load().micDeviceId || '');
@@ -296,6 +308,10 @@ function countWords(text) {
 }
 
 ipcMain.on('audio-segments-captured', async (_event, segments) => {
+  // Tracked outside the try so `finally` can decide idle vs. error even if
+  // something throws partway through — the overlay must never hang, and a
+  // failure that never surfaces to the user is worse than a broken paste.
+  let failed = false;
   try {
     const totalDurationMs = segments.reduce((n, s) => n + s.durationMs, 0);
     log.log('[audio-segments] count:', segments.length, '| totalDurationMs:', totalDurationMs);
@@ -325,7 +341,7 @@ ipcMain.on('audio-segments-captured', async (_event, segments) => {
       }
     }
 
-    db.insert({
+    lastRecordingId = db.insert({
       text: fullText,
       durationMs: totalDurationMs,
       status,
@@ -341,11 +357,67 @@ ipcMain.on('audio-segments-captured', async (_event, segments) => {
       wordCount: countWords(fullText),
       pricePerMinuteRub: config.load().pricePerMinuteRub || 0,
     });
+
+    // Nothing landed anywhere the user can see it — surface the error panel
+    // instead of silently going idle. A 'partial' transcript that still made
+    // it into the paste target doesn't count as a failure worth interrupting for.
+    failed = !fullText || status === 'paste_error';
   } catch (err) {
     log.error('[transcribe] failed', String((err && err.stack) || err), '| cause:', String(err && err.cause));
+    failed = true;
   } finally {
-    setState('idle');
+    setState(failed ? 'error' : 'idle');
   }
+});
+
+ipcMain.on('overlay-cancel', () => {
+  if (state === 'error') setState('idle');
+});
+
+ipcMain.on('overlay-retry', async () => {
+  if (state !== 'error' || lastRecordingId == null) return;
+  setState('transcribing');
+  const row = db.getById(lastRecordingId);
+  if (!row) {
+    setState('idle');
+    return;
+  }
+  let fullText = row.text;
+  let status = row.status;
+  let error = row.error;
+  try {
+    if (status === 'paste_error' && row.text) {
+      // Transcription already succeeded last time — only the paste failed,
+      // so there's no reason to pay for another Yandex call.
+      await pasteText(row.text);
+      status = 'ok';
+      error = null;
+    } else {
+      if (!row.audio_dir) throw new Error('No stored audio for this entry');
+      const buffers = recordings.loadSegments(row.audio_dir);
+      const result = await transcribeSegments(buffers);
+      fullText = result.fullText;
+      status = result.status;
+      error = result.error;
+      // A retry is a real, new call to Yandex — log it as additional usage
+      // rather than silently re-billing for free.
+      db.logUsage({
+        durationMs: row.duration_ms,
+        wordCount: countWords(fullText),
+        pricePerMinuteRub: config.load().pricePerMinuteRub || 0,
+      });
+      if (fullText && status === 'ok') {
+        await pasteText(fullText);
+      }
+    }
+  } catch (err) {
+    log.error('[overlay-retry] failed', String((err && err.stack) || err));
+    status = status === 'ok' ? 'paste_error' : status || 'transcribe_error';
+    const msg = String((err && err.message) || err);
+    error = error ? `${error}; retry: ${msg}` : msg;
+  }
+  db.updateResult(lastRecordingId, { text: fullText, status, error });
+  setState(!fullText || status === 'paste_error' ? 'error' : 'idle');
 });
 
 ipcMain.handle('history:list', () => db.all());

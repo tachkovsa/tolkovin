@@ -90,7 +90,14 @@ function teardownMic() {
 // continuation would then arm a recording nothing will ever tell to stop.
 let micChain = Promise.resolve();
 function queued(fn) {
-  micChain = micChain.then(fn, fn);
+  // Distinct rejection handler — reusing `fn` for both arms of .then() would
+  // replay it as an error handler (with the rejection reason as its sole
+  // arg) if the chain was already broken, running the wrong logic instead of
+  // recovering from it.
+  micChain = micChain.then(fn, (err) => {
+    console.error('[recorder] queued chain was rejected, resetting', String(err));
+    teardownMic();
+  });
   return micChain;
 }
 
@@ -178,16 +185,28 @@ function pollForSilence() {
 
 window.tolkovin.onStart(() => {
   queued(async () => {
-    await ensureReady(); // pays acquisition latency every time — main shows a "warming" state while this runs
-    segments = [];
-    sessionActive = true;
-    silenceStartedAt = null;
-    await startSegment();
-    window.tolkovin.notifyArmed(); // lets main flip the overlay from "warming" to "recording"
-    console.log('recording started');
+    try {
+      await ensureReady(); // pays acquisition latency every time — main shows a "warming" state while this runs
+      segments = [];
+      sessionActive = true;
+      silenceStartedAt = null;
+      await startSegment();
+      window.tolkovin.notifyArmed(); // lets main flip the overlay from "warming" to "recording"
+      console.log('recording started');
 
-    clearInterval(pollTimer);
-    pollTimer = setInterval(pollForSilence, POLL_MS);
+      clearInterval(pollTimer);
+      pollTimer = setInterval(pollForSilence, POLL_MS);
+    } catch (err) {
+      // getUserMedia can fail here now in ways it rarely did when the stream
+      // was warmed once at launch — permission revoked, device unplugged,
+      // grabbed by another app. Without this, no segments ever get produced,
+      // so 'audio-segments-captured' never fires and main is left stuck in
+      // 'warming'/'transcribing' forever with no recovery path.
+      console.error('[recorder] failed to start recording', String((err && err.stack) || err));
+      sessionActive = false;
+      teardownMic();
+      window.tolkovin.notifyFailed();
+    }
   });
 });
 
